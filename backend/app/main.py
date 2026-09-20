@@ -1,0 +1,96 @@
+from dotenv import load_dotenv
+load_dotenv()
+
+import os
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from typing import Optional, List
+from pydantic import BaseModel
+
+from app.schemas import TaskResponse
+from app.router.classifier import classify_task
+from app.agents.graph import app_graph
+
+app = FastAPI(title="Sovereign AI Workbench - Phase 1")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class MemoRequest(BaseModel):
+    history: List[ChatMessage]
+
+@app.post("/api/download_memo")
+async def download_memo(req: MemoRequest):
+    try:
+        from docx import Document
+        doc = Document()
+        doc.add_heading("MRPL Official Approval Memo", 0)
+        
+        for msg in req.history:
+            p = doc.add_paragraph()
+            p.add_run(f"[{msg.role.upper()}]: ").bold = True
+            p.add_run(msg.content)
+        
+        os.makedirs("data/outputs", exist_ok=True)
+        filepath = "data/outputs/memo.docx"
+        doc.save(filepath)
+        return FileResponse(filepath, filename="MRPL_Memo.docx")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/task", response_model=TaskResponse)
+async def process_task(
+    modality: str = Form(...),
+    prompt: str = Form(...),
+    file: Optional[UploadFile] = File(None)
+):
+    try:
+        file_path = None
+        if file:
+            os.makedirs("data/uploads", exist_ok=True)
+            file_path = os.path.join("data/uploads", file.filename)
+            with open(file_path, "wb") as f:
+                f.write(await file.read())
+        
+        # 1. Routing
+        pipeline = classify_task(modality=modality, prompt=prompt, file_name=file.filename if file else None)
+        
+        # 2. LangGraph Execution
+        initial_state = {
+            "modality": modality,
+            "prompt": prompt,
+            "file_name": file_path,
+            "trace": [f"Task routed to: {pipeline}"]
+        }
+        
+        # We invoke the LangGraph synchronously for the hackathon prototype
+        final_state = app_graph.invoke(initial_state)
+        
+        # Format the output trace and draft
+        trace_str = "\n".join([f"- {t}" for t in final_state.get('trace', [])])
+        draft = final_state.get('draft', 'No draft generated.')
+        
+        final_message = f"**Agent Execution Trace:**\n{trace_str}\n\n---\n\n**Final Output:**\n\n{draft}"
+        
+        return TaskResponse(
+            status="success",
+            pipeline_route=pipeline,
+            message=final_message
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

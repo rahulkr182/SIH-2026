@@ -29,6 +29,9 @@ class ChatMessage(BaseModel):
 class MemoRequest(BaseModel):
     history: List[ChatMessage]
 
+class PDFRequest(BaseModel):
+    text: str
+
 @app.post("/api/download_memo")
 async def download_memo(req: MemoRequest):
     try:
@@ -48,6 +51,50 @@ async def download_memo(req: MemoRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/download_pdf")
+async def download_pdf(req: PDFRequest):
+    try:
+        # If the agent natively edited a PDF during this session, return it directly
+        filepath = "data/outputs/edited_document.pdf"
+        if os.path.exists(filepath):
+            return FileResponse(filepath, filename="Edited_Document.pdf")
+            
+        from fpdf import FPDF
+        import re
+        
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=11)
+        
+        # Clean markdown
+        clean_text = req.text.replace('**', '').replace('### ', '').replace('## ', '').replace('# ', '')
+        
+        # Replace long dash sequences that break FPDF
+        clean_text = re.sub(r'-{4,}', '---', clean_text)
+        
+        lines = clean_text.split('\n')
+        for line in lines:
+            line = line.encode('latin-1', 'replace').decode('latin-1')
+            if not line.strip():
+                pdf.ln(6)
+                continue
+            try:
+                pdf.multi_cell(w=0, h=6, txt=line)
+            except Exception:
+                # Fallback if a line causes "not enough horizontal space"
+                pdf.write(h=6, txt=line[:80])
+                pdf.ln(6)
+            
+        os.makedirs("data/outputs", exist_ok=True)
+        filepath = "data/outputs/edited_document.pdf"
+        pdf.output(filepath)
+        return FileResponse(filepath, filename="Edited_Document.pdf")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/task", response_model=TaskResponse)
 async def process_task(
     modality: str = Form(...),
@@ -55,6 +102,10 @@ async def process_task(
     file: Optional[UploadFile] = File(None)
 ):
     try:
+        # Cleanup any previous native edits to avoid returning old files
+        if os.path.exists("data/outputs/edited_document.pdf"):
+            os.remove("data/outputs/edited_document.pdf")
+            
         file_path = None
         if file:
             os.makedirs("data/uploads", exist_ok=True)
@@ -89,6 +140,8 @@ async def process_task(
         )
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

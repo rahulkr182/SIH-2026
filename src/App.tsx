@@ -26,7 +26,42 @@ function App() {
   const [activeTab, setActiveTab] = useState<'input' | 'output'>('input');
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [prompt, setPrompt] = useState('');
+  const [modality, setModality] = useState('Process API 510 Inspection Report (Handwritten)');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  type ChatMessage = {role: 'user' | 'agent', content: string};
+  type Session = { id: string; title: string; date: string; history: ChatMessage[]; };
+  const [sessions, setSessions] = useState<Session[]>([
+    {
+      id: '1',
+      title: 'API 510: Pump 104-A',
+      date: 'Today, 10:42 AM',
+      history: [{role: 'user', content: 'Analyze this API 510 report'}, {role: 'agent', content: 'The pump appears to be in good condition based on the API 510 metrics provided.'}]
+    },
+    {
+      id: '2',
+      title: 'Pressure Calc: Line 4',
+      date: 'Yesterday, 2:15 PM',
+      history: [{role: 'user', content: 'Calculate the pressure for line 4'}, {role: 'agent', content: 'The calculated pressure drop is 15.2 PSI.'}]
+    }
+  ]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
+  const startNewSession = () => {
+    setProcessingState('idle');
+    setSelectedFile(null);
+    setPrompt('');
+    setChatHistory([]);
+    setCurrentSessionId(null);
+    setActiveTab('input');
+  };
+
+  const loadSession = (session: Session) => {
+    setCurrentSessionId(session.id);
+    setChatHistory(session.history);
+    setActiveTab('output');
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,16 +104,14 @@ function App() {
   const [chatHistory, setChatHistory] = useState<{role: 'user' | 'agent', content: string}[]>([]);
 
   const handleProcess = async () => {
-    if (!selectedFile) {
-      alert("Please upload a file first to run the AI.");
+    if (!selectedFile && !prompt.trim()) {
+      alert("Please upload a file or enter a command first.");
       return;
     }
     
     setProcessingState('processing');
     setCurrentStep(0);
-    setActiveTab('input');
     
-    // Animate steps quickly to show "agentic" process
     const stepInterval = setInterval(() => {
       setCurrentStep(prev => {
         if (prev < steps.length - 1) return prev + 1;
@@ -89,12 +122,33 @@ function App() {
 
     try {
       const formData = new FormData();
-      formData.append('prompt', "Please process the attached document according to the task modality.");
-      formData.append('modality', "API 510 Inspection / P&ID Analysis");
-      formData.append('file', selectedFile);
+      formData.append('prompt', prompt.trim() || "Please process the attached document according to the task modality.");
+      formData.append('modality', modality);
+      if (selectedFile) {
+        formData.append('file', selectedFile);
+      }
 
-      // Add user message to chat history immediately
-      setChatHistory(prev => [...prev, {role: 'user', content: `Submitted document: ${selectedFile.name} for processing.`}]);
+      let userMsg = prompt.trim() || "Process document";
+      if (selectedFile) {
+        userMsg += `\n[Attached File: ${selectedFile.name}]`;
+      }
+
+      let sessionIdToUpdate = currentSessionId;
+      if (!sessionIdToUpdate) {
+        sessionIdToUpdate = Date.now().toString();
+        setCurrentSessionId(sessionIdToUpdate);
+        setSessions(prev => [{
+          id: sessionIdToUpdate as string,
+          title: (prompt.trim() || (selectedFile ? selectedFile.name : "Agent Request")).substring(0, 25),
+          date: new Date().toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'}),
+          history: []
+        }, ...prev]);
+      }
+
+      const tempUserMsg = {role: 'user' as const, content: userMsg};
+      setChatHistory(prev => [...prev, tempUserMsg]);
+      setSessions(prev => prev.map(s => s.id === sessionIdToUpdate ? {...s, history: [...s.history, tempUserMsg]} : s));
+      setPrompt('');
 
       const response = await fetch('http://localhost:8000/api/task', {
         method: 'POST',
@@ -107,12 +161,20 @@ function App() {
 
       const data = await response.json();
       
-      setChatHistory(prev => [...prev, {role: 'agent', content: data.message}]);
+      const tempAgentMsg = {role: 'agent' as const, content: data.message};
+      setChatHistory(prev => [...prev, tempAgentMsg]);
+      setSessions(prev => prev.map(s => s.id === sessionIdToUpdate ? {...s, history: [...s.history, tempAgentMsg]} : s));
+      
       setProcessingState('done');
       setActiveTab('output');
+      setSelectedFile(null);
     } catch (error: any) {
       console.error(error);
-      setChatHistory(prev => [...prev, {role: 'agent', content: `Error: Could not process request. Make sure the FastAPI backend is running.`}]);
+      const tempErrorMsg = {role: 'agent' as const, content: `Error: Could not process request.`};
+      setChatHistory(prev => [...prev, tempErrorMsg]);
+      if (currentSessionId) {
+          setSessions(prev => prev.map(s => s.id === currentSessionId ? {...s, history: [...s.history, tempErrorMsg]} : s));
+      }
       setProcessingState('done');
       setActiveTab('output');
     }
@@ -140,6 +202,38 @@ function App() {
     } catch (e) {
       console.error(e);
       alert("Failed to download document.");
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    try {
+      // Get the last message from the agent to convert to PDF
+      const lastAgentMsg = chatHistory.filter(m => m.role === 'agent').pop();
+      if (!lastAgentMsg) {
+          alert("No AI response to download yet.");
+          return;
+      }
+      
+      const response = await fetch('http://localhost:8000/api/download_pdf', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: lastAgentMsg.content }),
+      });
+      if (!response.ok) throw new Error("Download failed");
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Edited_Document.pdf';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert("Failed to download PDF.");
     }
   };
 
@@ -222,31 +316,22 @@ function App() {
         <aside className="panel" style={{alignSelf: 'start', display: 'flex', flexDirection: 'column', gap: '2rem'}}>
           
           <div>
-            <div className="panel-header">
-              <Activity size={18} /> Recent Sessions
+            <div className="panel-header" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+              <div><Activity size={18} style={{display: 'inline', verticalAlign: 'text-bottom'}} /> Recent Sessions</div>
+              <button className="btn btn-primary" onClick={startNewSession} style={{padding: '0.4rem 0.6rem', fontSize: '0.75rem'}}>
+                + New
+              </button>
             </div>
             <ul className="feature-list" style={{gap: '0.5rem'}}>
-              <li className="feature-item" style={{padding: '0.75rem', backgroundColor: '#e8f0fe', borderRadius: '4px', borderLeft: '3px solid var(--primary-color)', cursor: 'pointer'}}>
-                <div className="feature-icon" style={{color: 'var(--primary-color)'}}><FileText size={18} /></div>
-                <div className="feature-text">
-                  <h4 style={{fontSize: '0.9rem', marginBottom: '0'}}>API 510: Pump 104-A</h4>
-                  <p style={{fontSize: '0.75rem'}}>Today, 10:42 AM</p>
-                </div>
-              </li>
-              <li className="feature-item" style={{padding: '0.75rem', borderRadius: '4px', cursor: 'pointer'}}>
-                <div className="feature-icon" style={{color: '#999'}}><Calculator size={18} /></div>
-                <div className="feature-text">
-                  <h4 style={{fontSize: '0.9rem', color: '#555', marginBottom: '0'}}>Pressure Calc: Line 4</h4>
-                  <p style={{fontSize: '0.75rem'}}>Yesterday, 2:15 PM</p>
-                </div>
-              </li>
-              <li className="feature-item" style={{padding: '0.75rem', borderRadius: '4px', cursor: 'pointer'}}>
-                <div className="feature-icon" style={{color: '#999'}}><Database size={18} /></div>
-                <div className="feature-text">
-                  <h4 style={{fontSize: '0.9rem', color: '#555', marginBottom: '0'}}>SOP Query: Hot Work</h4>
-                  <p style={{fontSize: '0.75rem'}}>Sep 15, 9:00 AM</p>
-                </div>
-              </li>
+              {sessions.map(session => (
+                <li key={session.id} onClick={() => loadSession(session)} className="feature-item" style={{padding: '0.75rem', backgroundColor: currentSessionId === session.id ? '#e8f0fe' : 'transparent', borderRadius: '4px', borderLeft: currentSessionId === session.id ? '3px solid var(--primary-color)' : 'none', cursor: 'pointer'}}>
+                  <div className="feature-icon" style={{color: currentSessionId === session.id ? 'var(--primary-color)' : '#999'}}><FileText size={18} /></div>
+                  <div className="feature-text">
+                    <h4 style={{fontSize: '0.9rem', marginBottom: '0', color: currentSessionId === session.id ? 'inherit' : '#555'}}>{session.title}</h4>
+                    <p style={{fontSize: '0.75rem'}}>{session.date}</p>
+                  </div>
+                </li>
+              ))}
             </ul>
           </div>
 
@@ -343,7 +428,11 @@ function App() {
                 
                 <div style={{marginBottom: '1.5rem'}}>
                   <label className="form-label">Task Modality</label>
-                  <select className="input-select">
+                  <select 
+                    className="input-select"
+                    value={modality}
+                    onChange={(e) => setModality(e.target.value)}
+                  >
                     <option>Process API 510 Inspection Report (Handwritten)</option>
                     <option>Analyze P&ID Schematic Diagram</option>
                     <option>Calculate Pipeline Pressure Formulas</option>
@@ -351,7 +440,18 @@ function App() {
                 </div>
 
                 <div style={{marginBottom: '1.5rem'}}>
-                  <label className="form-label">Upload Source Document</label>
+                  <label className="form-label">Command / Prompt</label>
+                  <textarea 
+                    className="input-select"
+                    style={{backgroundImage: 'none', padding: '1rem', minHeight: '100px', width: '100%', resize: 'vertical'}}
+                    placeholder="E.g., Calculate the pressure of the pipeline based on the attached report..."
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                  />
+                </div>
+
+                <div style={{marginBottom: '1.5rem'}}>
+                  <label className="form-label">Upload Source Document (Optional)</label>
                   <input 
                     type="file" 
                     ref={fileInputRef} 
@@ -385,7 +485,7 @@ function App() {
                 </div>
 
                 <div style={{display: 'flex', justifyContent: 'flex-end'}}>
-                  <button className="btn btn-primary" onClick={handleProcess} disabled={!selectedFile || processingState === 'processing'}>
+                  <button className="btn btn-primary" onClick={handleProcess} disabled={(!selectedFile && !prompt.trim()) || processingState === 'processing'}>
                     <Terminal size={18} /> {processingState === 'processing' ? 'Processing via FastAPI & LangGraph...' : 'Execute Agentic Flow'}
                   </button>
                 </div>
@@ -430,8 +530,8 @@ function App() {
                   <CheckCircle2 size={28} /> 
                   <h2 style={{fontSize: '1.5rem', fontWeight: 600}}>AI Agent Session History</h2>
                 </div>
-                <button className="btn btn-secondary" onClick={() => {setProcessingState('idle'); setSelectedFile(null); setActiveTab('input');}}>
-                  New Document Request
+                <button className="btn btn-secondary" onClick={startNewSession}>
+                  New Session
                 </button>
               </div>
 
@@ -456,9 +556,26 @@ function App() {
                 ))}
               </div>
               
-              <div style={{textAlign: 'center', marginTop: '2rem'}}>
+              <form onSubmit={(e) => { e.preventDefault(); handleProcess(); }} style={{display: 'flex', gap: '1rem', marginTop: '1.5rem'}}>
+                <input 
+                  type="text" 
+                  className="input-select" 
+                  style={{flex: 1, padding: '1rem', backgroundImage: 'none', border: '1px solid #ccc'}} 
+                  placeholder="Type a command or follow-up question..." 
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                />
+                <button type="submit" className="btn btn-primary" disabled={processingState === 'processing' || !prompt.trim()}>
+                  <Terminal size={18} /> Send Command
+                </button>
+              </form>
+
+              <div style={{textAlign: 'center', marginTop: '2rem', display: 'flex', justifyContent: 'center', gap: '1rem'}}>
+                 <button className="btn btn-secondary" onClick={handleDownloadPdf} style={{gap: '0.75rem', padding: '1rem 2rem', fontSize: '1.1rem', backgroundColor: '#e8f0fe', color: 'var(--primary-color)', border: '1px solid var(--primary-color)'}}>
+                    <Download size={20} /> Export Response to PDF
+                 </button>
                  <button className="btn btn-primary" onClick={handleDownloadDocx} style={{gap: '0.75rem', padding: '1rem 2rem', fontSize: '1.1rem'}}>
-                    <Download size={20} /> Download Session as Audit Log (.docx)
+                    <Download size={20} /> Download Full Session (.docx)
                  </button>
               </div>
             </div>

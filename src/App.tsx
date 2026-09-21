@@ -150,7 +150,8 @@ function App() {
       setSessions(prev => prev.map(s => s.id === sessionIdToUpdate ? {...s, history: [...s.history, tempUserMsg]} : s));
       setPrompt('');
 
-      const response = await fetch('http://localhost:8000/api/task', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/api/task`, {
         method: 'POST',
         body: formData,
       });
@@ -182,7 +183,8 @@ function App() {
 
   const handleDownloadDocx = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/download_memo', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/api/download_memo`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -214,7 +216,8 @@ function App() {
           return;
       }
       
-      const response = await fetch('http://localhost:8000/api/download_pdf', {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/api/download_pdf`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

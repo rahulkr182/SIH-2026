@@ -1,3 +1,4 @@
+import os
 from langchain_qdrant import Qdrant
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from qdrant_client import QdrantClient
@@ -8,7 +9,10 @@ def search_sops(query: str, top_k: int = 3) -> str:
     Returns a formatted string of the retrieved contexts.
     """
     embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-    client = QdrantClient("http://localhost:6333")
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY", None)
+    
+    client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
     
     qdrant = Qdrant(
         client=client,

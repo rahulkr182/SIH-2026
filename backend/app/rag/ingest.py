@@ -35,7 +35,10 @@ All carbon steel piping must undergo API 510 ultrasonic thickness inspection eve
     embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     
     # 4. Ingest into Qdrant
-    qdrant_client = QdrantClient("http://localhost:6333")
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY", None)
+    
+    qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
     collection_name = "mrpl_sops"
     
     try:
@@ -51,7 +54,8 @@ All carbon steel piping must undergo API 510 ultrasonic thickness inspection eve
     Qdrant.from_documents(
         docs,
         embeddings,
-        url="http://localhost:6333",
+        url=qdrant_url,
+        api_key=qdrant_api_key,
         collection_name=collection_name,
     )
     
